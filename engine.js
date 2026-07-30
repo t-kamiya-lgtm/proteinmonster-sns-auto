@@ -1,208 +1,189 @@
-// 投稿案の生成エンジン
+// 薬機法（医薬品医療機器等法）・景品表示法チェッカー
 //
-// ブラウザ（ダッシュボード）と Node（毎朝のメール通知）の両方から読み込む。
-// 日付をシードにした決定的な乱数を使うので、同じ日付なら誰がどこで実行しても
-// まったく同じ提案になる。メール本文とダッシュボードの表示が食い違わないのはこのため。
+// 本品は「食品」であり、機能性表示食品・特定保健用食品の届出はない前提。
+// したがって、身体の構造・機能への影響や疾病の治療・予防を想起させる表現は使えない。
+// ここは生成側と手入力側の両方に効く最後の関門で、level:'block' が1件でも残ると
+// ダッシュボードの投稿ボタンは押せない。
 
-import { PRODUCTS, COMMON } from './data/products.js';
-import {
-  AXES, HOOKS, BODIES, BODIES_X, CLOSINGS, CLOSINGS_X,
-  ALLERGY_NOTE, HASHTAGS, OVERLAYS
-} from './data/copy.js';
-import { checkCompliance } from './compliance.js';
+export const LEVEL = { BLOCK: 'block', WARN: 'warn' };
 
-/* -------------------------- 決定的乱数 -------------------------- */
-
-function hashString(str) {
-  let h = 2166136261 >>> 0;
-  for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 16777619) >>> 0;
+// --- 薬機法：食品で標榜できない効能効果 ---------------------------------
+const YAKKI_RULES = [
+  {
+    id: 'yakki-slim',
+    level: LEVEL.BLOCK,
+    law: '薬機法',
+    pattern: /痩せ|やせる|ヤセ|激やせ|脂肪燃焼|燃焼させ|脂肪が落ち|体脂肪が減|減量できる|ダイエット効果|痩身/,
+    reason: '食品で痩身・脂肪燃焼の効果を標榜すると医薬品的効能効果とみなされます。',
+    fix: '「主食置き換え」「1食あたり◯kcal」など、事実としての栄養設計・食シーンの表現に置き換えてください。'
+  },
+  {
+    id: 'yakki-muscle',
+    level: LEVEL.BLOCK,
+    law: '薬機法',
+    pattern: /筋肉がつく|筋肉が増え|筋肥大|バルクアップできる|筋力アップ|筋力が上が|マッチョになれ/,
+    reason: '身体の組織を増強する効果の標榜は医薬品的効能効果にあたります。',
+    fix: '「トレーニング後のタンパク質補給に」など、摂取シーンの表現にとどめてください。'
+  },
+  {
+    id: 'yakki-disease',
+    level: LEVEL.BLOCK,
+    law: '薬機法',
+    pattern: /治る|治療|改善する|予防でき|効果がある|効く|症状|病気|生活習慣病|糖尿|血糖値|血圧|コレステロール|中性脂肪|肝機能|貧血/,
+    reason: '疾病の治療・予防や身体機能への影響を示す表現は使えません。',
+    fix: 'その主張自体を削除してください。数値の事実（栄養成分値）に置き換えるのが安全です。'
+  },
+  {
+    id: 'yakki-function',
+    level: LEVEL.BLOCK,
+    law: '薬機法',
+    pattern: /免疫力|代謝が上が|代謝アップ|基礎代謝を|デトックス|老廃物|腸内環境を整え|整腸|便秘|疲労回復|疲れが取れ|むくみ|美肌|肌がきれい|アンチエイジング|若返り|老化を防/,
+    reason: '身体の機能に対する作用の標榜は、機能性表示等の届出がない食品では認められません。',
+    fix: '削除するか、原材料・成分の事実の記載にとどめてください。'
+  },
+  {
+    id: 'yakki-digest',
+    level: LEVEL.WARN,
+    law: '薬機法',
+    pattern: /胃腸に(?:優|やさ)しく|消化を助け|消化酵素が豊富|吸収を高め/,
+    reason: '消化・吸収など体内の働きへの作用を示す表現は、食品では避けるのが安全です。',
+    fix: '素材の一般的な説明にとどめるか、削除してください（例：「ネバネバ食材の長芋をプラス」）。'
+  },
+  {
+    id: 'yakki-health',
+    level: LEVEL.WARN,
+    law: '薬機法',
+    pattern: /健康になる|健康維持に|body\s*make|ボディメイクできる|体質が変わ/,
+    reason: '健康効果を約束する表現と受け取られる可能性があります。',
+    fix: '「健康的な食生活の一部として」等、断定を避けた表現に調整してください。'
+  },
+  {
+    id: 'yakki-testimonial',
+    level: LEVEL.WARN,
+    law: '薬機法',
+    pattern: /飲み続けたら|食べ続けたら|(\d+)\s*(kg|キロ)\s*(減|落ち|痩)|変化を実感|効果を実感/,
+    reason: '体験談の形をとっていても、効果効能の暗示は同様に規制対象です。',
+    fix: '結果を示す体験談は避け、味・食べやすさ・調理のしやすさの感想にとどめてください。'
   }
-  return h >>> 0;
-}
+];
 
-/** mulberry32 */
-export function makeRng(seedStr) {
-  let a = hashString(seedStr);
-  return function rng() {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-const pick = (rng, arr) => arr[Math.floor(rng() * arr.length)];
-
-function pickMany(rng, arr, count) {
-  const pool = [...arr];
-  const out = [];
-  while (out.length < count && pool.length) {
-    out.push(pool.splice(Math.floor(rng() * pool.length), 1)[0]);
+// --- 景品表示法：優良誤認・有利誤認 -------------------------------------
+const KEIHYO_RULES = [
+  {
+    id: 'keihyo-no1',
+    level: LEVEL.BLOCK,
+    law: '景表法',
+    pattern: /No\.?\s*1|ナンバーワン|日本一|世界一|業界初|世界初|日本初|唯一の|最高の|最強|一番|トップクラス/i,
+    reason: 'No.1・最上級表現は、調査に基づく合理的根拠と出典の明示がなければ優良誤認となります。',
+    fix: '根拠と調査主体・時点を併記できないなら削除してください。'
+  },
+  {
+    id: 'keihyo-absolute',
+    level: LEVEL.BLOCK,
+    law: '景表法',
+    pattern: /必ず|絶対に|誰でも必ず|100[%％]|確実に|保証します|永久に/,
+    reason: '例外なく効果が得られるかのような断定は、合理的根拠を欠く表示になります。',
+    fix: '断定を外し、事実の記述に置き換えてください。'
+  },
+  {
+    id: 'keihyo-only',
+    level: LEVEL.WARN,
+    law: '景表法',
+    pattern: /食べるだけで|置き換えるだけで|これだけで|飲むだけで/,
+    reason: 'それだけで結果が出るかのような表現は、優良誤認につながります。',
+    fix: '「食事のバランスの中で」等、前提条件を添えてください。'
+  },
+  {
+    id: 'keihyo-price',
+    level: LEVEL.WARN,
+    law: '景表法',
+    pattern: /通常価格|定価|[0-9,]+円\s*→|\d+\s*[%％]\s*OFF|半額|最安/,
+    reason: '価格・割引の訴求は二重価格表示の規制対象です。比較対照価格の根拠と期間の明示が必要です。',
+    fix: '販売期間・比較対象価格の根拠を確認のうえ、必要な注記を追加してください。'
+  },
+  {
+    id: 'keihyo-comparison',
+    level: LEVEL.WARN,
+    law: '景表法',
+    pattern: /より多い|より少な|比べて|約半分|上回る|勝る/,
+    reason: '比較広告には、比較対象・調査主体・出典の明示が必要です。',
+    fix: '注記（※当社調べ／※日本食品標準成分表2021年版（八訂）より）が本文に含まれているか確認してください。'
+  },
+  {
+    id: 'keihyo-sugarfree',
+    level: LEVEL.BLOCK,
+    law: '景表法・食品表示基準',
+    pattern: /糖質ゼロ|糖質0|無糖|カロリーゼロ|ノンカロリー|糖質オフ(?!.*比)/,
+    reason: '強調表示には食品表示基準の基準値と、比較対象の明示が必要です。本品の値では該当しません。',
+    fix: '「糖質11.9g（1食あたり）」のように実数値で表現してください。'
   }
-  return out;
-}
+];
 
-/* -------------------------- 日付ユーティリティ -------------------------- */
-
-/** JST の YYYY-MM-DD。ローテーションはこれを基準にする。 */
-export function jstDateKey(d = new Date()) {
-  const jst = new Date(d.getTime() + 9 * 3600 * 1000);
-  return jst.toISOString().slice(0, 10);
-}
-
-function dayIndex(dateKey) {
-  const [y, m, d] = dateKey.split('-').map(Number);
-  return Math.floor(Date.UTC(y, m - 1, d) / 86400000);
-}
-
-/* -------------------------- ハッシュタグ -------------------------- */
-
-export function buildHashtags(rng, { sku, axis, platform }) {
-  if (platform === 'x') {
-    // X は本文が主役。タグは2〜3個に絞る。
-    const base = ['#プロテインモンスター'];
-    const extra = pickMany(rng, HASHTAGS.byAxis[axis], 2);
-    return [...base, ...extra];
+// --- プラットフォーム要件 -----------------------------------------------
+const PLATFORM_RULES = [
+  {
+    id: 'pr-disclosure',
+    level: LEVEL.WARN,
+    law: 'ステマ規制',
+    pattern: /^(?![\s\S]*(#PR|#pr|＃PR|#プロモーション|#広告))[\s\S]*$/,
+    reason:
+      '事業者アカウントからの自社商品投稿は通常ステマ規制の対象外ですが、第三者の投稿の再掲・タイアップの場合は「#PR」等の明示が必要です。',
+    fix: 'タイアップ投稿なら #PR を追加してください。自社アカウントの通常投稿であればこの警告は無視して構いません。',
+    optional: true // 既定では無効。設定でオンにできる。
   }
-  // Instagram は 20 個前後。core → SKU → 軸 の順で埋める。
-  const tags = [...HASHTAGS.core, ...HASHTAGS.bySku[sku]];
-  const axisTags = pickMany(rng, HASHTAGS.byAxis[axis], HASHTAGS.byAxis[axis].length);
-  const otherAxes = AXES.filter((a) => a.id !== axis);
-  const spice = pickMany(rng, otherAxes.flatMap((a) => HASHTAGS.byAxis[a.id]), 4);
-  const merged = [];
-  for (const t of [...tags, ...axisTags, ...spice]) {
-    if (!merged.includes(t)) merged.push(t);
-    if (merged.length >= 20) break;
-  }
-  return merged;
-}
+];
 
-/* -------------------------- キャプション -------------------------- */
-
-function buildCaption(rng, { product, axis, platform }) {
-  const p = product;
-  const n = p.nutrition;
-  const hook = pick(rng, HOOKS[axis])(p, n);
-  const bodyBlocks = BODIES[axis](p, n, COMMON);
-
-  if (platform === 'x') {
-    // 日本語主体の投稿として 140 字前後に収める。本文は専用の1行版を使う。
-    const closing = pick(rng, CLOSINGS_X);
-    const body = pick(rng, BODIES_X[axis](p, n));
-    return [hook, '', body, '', closing].join('\n');
-  }
-
-  const closing = pick(rng, CLOSINGS);
-  const parts = [hook, '', bodyBlocks.join('\n\n'), '', closing, '', ALLERGY_NOTE, COMMON.disclaimers.nutrition];
-  return parts.join('\n');
-}
-
-/* -------------------------- 画像プラン -------------------------- */
+export const ALL_RULES = [...YAKKI_RULES, ...KEIHYO_RULES, ...PLATFORM_RULES];
 
 /**
- * 画像の使い方を決める。
- * mode 'composite' = 写真にコピーを合成 / 'raw' = 写真そのまま
- * 実際にどのファイルを使うかは、ダッシュボード側が画像ライブラリのタグと
- * このプランの好みタグを突き合わせて決める（library.js の pickImage）。
+ * キャプション全文（ハッシュタグ含む）を検査する。
+ * @param {string} text
+ * @param {{includeOptional?: boolean}} opts
+ * @returns {{ok: boolean, blocks: Array, warns: Array, findings: Array}}
  */
-function buildImagePlan(rng, { product, axis, platform }) {
-  const mode = rng() < 0.5 ? 'composite' : 'raw';
-  // 文字は「そのまま」の案でも用意しておく。ダッシュボードで「文字を載せる」に
-  // 切り替えたときに、載せる文字が無いと何も起きないため。
-  const overlay = pick(rng, OVERLAYS[axis])(product, product.nutrition);
+export function checkCompliance(text, opts = {}) {
+  const findings = [];
+  const src = String(text || '');
 
-  // 軸ごとに相性のよい被写体
-  const preferScene = {
-    workout: ['cooked', 'raw', 'package'],
-    diet: ['cooked', 'lifestyle', 'package'],
-    time: ['cooking', 'cooked', 'lifestyle'],
-    trust: ['raw', 'package', 'ingredient']
-  }[axis];
-
-  return {
-    mode,
-    overlay,
-    // 書き出し比率はダッシュボードの設定で決める（投稿ごとに個別変更も可）。
-    preferScene,
-    preferSku: product.id,
-    // 合成する場合、文字を置く側に余白のある写真を優先する
-    preferSpace: overlay.template === 'stat' ? 'space-bottom' : 'space-top'
-  };
-}
-
-/* -------------------------- 1件の投稿案 -------------------------- */
-
-/**
- * @param {boolean} sync true なら媒体をシードに含めない。
- *   こうすると Instagram と X で 訴求軸・SKU・フック・画像の文字が一致し、
- *   「同じ投稿の媒体別バージョン」になる。false なら媒体ごとに独立して振る。
- */
-function buildProposal(dateKey, platform, variant = 0, salt = 0, sync = true) {
-  const seed = sync
-    ? `${dateKey}|${variant}|${salt}`
-    : `${dateKey}|${platform}|${variant}|${salt}`;
-  const rng = makeRng(seed);
-
-  // 軸は日ごとにローテーション。variant を足して、別案は別の軸になるようにする。
-  const axis = AXES[(dayIndex(dateKey) + variant) % AXES.length].id;
-  const axisDef = AXES.find((a) => a.id === axis);
-
-  // SKU は軸の相性を7割、残り3割はランダム。どちらか一方に特化させる。
-  let skuId;
-  if (axisDef.skuBias && rng() < 0.7) skuId = axisDef.skuBias;
-  else skuId = rng() < 0.5 ? 'monster' : 'sova';
-  const product = PRODUCTS[skuId];
-
-  // 画像プランを先に決めるのは、乱数の消費順を媒体間でそろえるため。
-  // キャプションは媒体で長さが違い、引く回数も変わるので、後ろに置く。
-  const image = buildImagePlan(rng, { product, axis, platform });
-  const caption = buildCaption(rng, { product, axis, platform });
-  const hashtags = buildHashtags(rng, { sku: skuId, axis, platform });
-
-  const fullText = platform === 'ig'
-    ? `${caption}\n\n${hashtags.join(' ')}`
-    : `${caption}\n\n${hashtags.join(' ')}`;
-
-  return {
-    id: `${dateKey}-${platform}-${variant}`,
-    dateKey,
-    platform,          // 'ig' | 'x'
-    variant,
-    axis,
-    axisLabel: axisDef.label,
-    sku: skuId,
-    skuLabel: product.nameJa,
-    caption,
-    hashtags,
-    fullText,
-    charCount: [...fullText].length,
-    image,
-    compliance: checkCompliance(fullText)
-  };
-}
-
-/**
- * その日の提案一式。
- * Instagram 1本 + X 1本を既定とし、それぞれ別案を variant で出せる。
- */
-export function generateDailyPlan(dateKey = jstDateKey(), variants = { ig: 0, x: 0 }, opts = {}) {
-  const sync = opts.sync !== false; // 既定は「そろえる」
-  const ig = buildProposal(dateKey, 'ig', variants.ig || 0, 0, sync);
-  let x = buildProposal(dateKey, 'x', variants.x || 0, 0, sync);
-
-  // 独立生成のときだけ、2本が同じ書き出しになるのを避ける。
-  // そろえる設定では一致しているのが正しい状態なので何もしない。
-  if (!sync) {
-    const firstLine = (p) => p.caption.split('\n')[0];
-    for (let salt = 1; salt <= 8 && firstLine(x) === firstLine(ig); salt++) {
-      x = buildProposal(dateKey, 'x', variants.x || 0, salt, false);
+  for (const rule of ALL_RULES) {
+    if (rule.optional && !opts.includeOptional) continue;
+    const re = new RegExp(rule.pattern.source, rule.pattern.flags.includes('g') ? rule.pattern.flags : rule.pattern.flags + 'g');
+    let m;
+    const seen = new Set();
+    while ((m = re.exec(src)) !== null) {
+      if (m[0] === '') { re.lastIndex++; continue; }
+      if (seen.has(m[0])) continue;
+      seen.add(m[0]);
+      findings.push({
+        ruleId: rule.id,
+        level: rule.level,
+        law: rule.law,
+        matched: m[0],
+        index: m.index,
+        reason: rule.reason,
+        fix: rule.fix
+      });
     }
   }
 
-  return { dateKey, sync, generatedAt: new Date().toISOString(), posts: [ig, x] };
+  // 比較表現があるのに出典注記がない場合は BLOCK に格上げする
+  const hasComparison = findings.some((f) => f.ruleId === 'keihyo-comparison');
+  const hasSource = /※.*(当社調べ|日本食品標準成分表)/.test(src);
+  if (hasComparison && !hasSource) {
+    for (const f of findings) {
+      if (f.ruleId === 'keihyo-comparison') {
+        f.level = LEVEL.BLOCK;
+        f.reason = '比較表現がありますが、出典・調査主体の注記が本文に見当たりません。';
+      }
+    }
+  }
+
+  const blocks = findings.filter((f) => f.level === LEVEL.BLOCK);
+  const warns = findings.filter((f) => f.level === LEVEL.WARN);
+  return { ok: blocks.length === 0, blocks, warns, findings };
 }
 
-export { buildProposal, AXES, PRODUCTS };
+/** 画像に載せる短文（合成テキスト）用。文字数が短いぶん厳しめに見る。 */
+export function checkImageText(text) {
+  return checkCompliance(text, { includeOptional: false });
+}

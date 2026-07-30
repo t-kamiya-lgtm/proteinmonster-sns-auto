@@ -1,209 +1,510 @@
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PROTEIN MONSTER｜SNS投稿ダッシュボード</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&display=swap" rel="stylesheet" onerror="this.remove()">
-<link rel="stylesheet" href="./style.css">
-</head>
-<body>
+// 投稿画像の合成
+//
+// 実際の @protein.monster_official の投稿デザインに合わせている。
+//   ・左上にロゴロックアップ（PROTEIN 白 / MONSTER オレンジの2段）
+//   ・オレンジの角丸ラベルで前置き
+//   ・スペックのチップを横並び
+//   ・数値訴求はオレンジの帯に白の極太数字
+//   ・写真の上に暗いグラデーションを敷いて文字を読ませる
+//
+// フォントは Web フォントの読み込み完了を待ってから描く（待たないと別書体で描かれる）。
 
-<header class="topbar">
-  <div class="brand">
-    <span class="brand-mark">PM</span>
-    <div>
-      <h1>SNS投稿ダッシュボード</h1>
-      <p class="brand-sub">PROTEIN MONSTER / SOVA</p>
-    </div>
-  </div>
-  <div class="topbar-right">
-    <label class="date-pick">
-      <span>対象日</span>
-      <input type="date" id="date-input">
-    </label>
-    <button class="btn ghost" id="btn-today">今日</button>
-  </div>
-</header>
+export const ASPECTS = {
+  '4:5': { w: 1080, h: 1350, label: '縦 4:5（Instagram推奨）' },
+  '1:1': { w: 1080, h: 1080, label: '正方形 1:1' },
+  '16:9': { w: 1200, h: 675, label: '横 16:9（X推奨）' }
+};
 
-<nav class="tabs" id="tabs">
-  <button class="tab active" data-view="proposals">今日の提案</button>
-  <button class="tab" data-view="library">画像ライブラリ <span class="badge" id="lib-badge">0</span></button>
-  <button class="tab" data-view="recipe">レシピ投稿</button>
-  <button class="tab" data-view="spec">スペック</button>
-  <button class="tab" data-view="log">投稿ログ</button>
-  <button class="tab" data-view="settings">設定</button>
-</nav>
+export const POSITIONS = {
+  bottom: '文字を下に置く',
+  top: '文字を上に置く'
+};
 
-<main>
-  <!-- ============ 今日の提案 ============ -->
-  <section class="view active" id="view-proposals">
-    <div class="notice" id="no-images-notice" hidden>
-      画像ライブラリが空です。<b>「画像ライブラリ」タブ</b>で Drive のフォルダをドラッグ＆ドロップして取り込んでください。取り込むまで画像プレビューは表示されません。
-    </div>
-    <div id="proposal-list" class="proposal-list"></div>
-  </section>
+export const TEMPLATES = {
+  stat: '数値主役（大きな数字＋オレンジ帯）',
+  hook: 'コピー主役（見出し2行）',
+  band: '上下帯（ロゴ帯＋コピー帯）'
+};
 
-  <!-- ============ 画像ライブラリ ============ -->
-  <section class="view" id="view-library">
-    <div class="dropzone" id="dropzone">
-      <p class="dz-title">画像をここにドラッグ＆ドロップ</p>
-      <p class="dz-sub">
-        <a href="https://drive.google.com/drive/folders/1uXFEWTMOK9SUzummPzaUfwp61pcEpenl" target="_blank" rel="noopener">Drive の素材フォルダ</a>
-        をダウンロードして、フォルダごと放り込んでください。ファイル名でカタログと自動照合します。
-      </p>
-      <label class="btn">
-        ファイルを選ぶ
-        <input type="file" id="file-input" accept="image/*" multiple hidden>
-      </label>
-      <p class="dz-note">画像はこの端末のブラウザ内（IndexedDB）に保存されます。どこにもアップロードされません。</p>
-    </div>
+export const FONT = '"Noto Sans JP", "Hiragino Sans", "Yu Gothic", system-ui, sans-serif';
 
-    <div class="lib-toolbar">
-      <div class="lib-stats" id="lib-stats"></div>
-      <div class="lib-filters">
-        <button class="chip-btn active" data-filter="all">すべて</button>
-        <button class="chip-btn" data-filter="stored">取込済み</button>
-        <button class="chip-btn" data-filter="missing">未取込</button>
-        <button class="chip-btn" data-filter="untagged">未タグ</button>
-        <button class="chip-btn" data-filter="unused">未使用</button>
-      </div>
-    </div>
+// ブランドの基本色。accent は設定で変更できる。
+export const BRAND = {
+  orange: '#f0821e',
+  ink: '#111111',
+  white: '#ffffff'
+};
 
-    <div class="lib-grid" id="lib-grid"></div>
-  </section>
+let fontsReady = null;
+export function ensureFonts() {
+  if (fontsReady) return fontsReady;
+  fontsReady = (async () => {
+    if (!document.fonts) return;
+    try {
+      await Promise.all([
+        document.fonts.load('900 120px "Noto Sans JP"'),
+        document.fonts.load('700 48px "Noto Sans JP"'),
+        document.fonts.load('500 32px "Noto Sans JP"'),
+        document.fonts.load('400 28px "Noto Sans JP"')
+      ]);
+      await document.fonts.ready;
+    } catch {
+      /* 読めなくても既定書体で描く */
+    }
+  })();
+  return fontsReady;
+}
 
-  <!-- ============ レシピ投稿 ============ -->
-  <section class="view" id="view-recipe">
-    <div class="notice" id="recipe-notice" hidden></div>
-    <div class="card">
-      <div class="row">
-        <label class="field-inline">
-          <span>レシピ</span>
-          <select id="recipe-select"></select>
-        </label>
-        <label class="field-inline">
-          <span>できあがり写真</span>
-          <select id="recipe-hero"></select>
-        </label>
-      </div>
-      <p class="hint">
-        4枚組のカルーセルとして書き出します。全枚 1080×1350（4:5）で揃えているので、
-        Instagram でトリミングされません。①の背景だけ写真を使い、②③④は文字で組みます。
-      </p>
-    </div>
+export async function loadBitmap(blob) {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      return await createImageBitmap(blob);
+    } catch {
+      /* fallthrough */
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    return img;
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }
+}
 
-    <div class="recipe-slides" id="recipe-slides"></div>
+/* ------------------------- 描画の下請け ------------------------- */
 
-    <div class="card">
-      <div class="row" style="margin-bottom:12px">
-        <button class="btn" id="recipe-download">4枚すべてダウンロード</button>
-        <button class="btn ghost" id="recipe-copy">キャプションをコピー</button>
-        <button class="btn ghost" id="recipe-reset">キャプションを戻す</button>
-      </div>
-      <label style="font-size:12px;color:var(--muted)">キャプション</label>
-      <textarea id="recipe-caption" rows="18"></textarea>
-      <div class="counter" id="recipe-counter"></div>
-    </div>
+export function drawCover(ctx, img, W, H, focus = 0.5) {
+  const scale = Math.max(W / img.width, H / img.height);
+  const dw = img.width * scale;
+  const dh = img.height * scale;
+  ctx.drawImage(img, (W - dw) / 2, (H - dh) * focus, dw, dh);
+}
 
-    <div class="compliance" id="recipe-compliance"></div>
-  </section>
+export function roundRect(ctx, x, y, w, h, r) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
 
-  <!-- ============ スペック ============ -->
-  <section class="view" id="view-spec">
-    <div id="spec-content"></div>
-  </section>
+/** 日本語は単語境界がないので1文字ずつ測って折り返す */
+export function wrap(ctx, text, maxWidth) {
+  const out = [];
+  for (const para of String(text ?? '').split('\n')) {
+    let line = '';
+    for (const ch of para) {
+      if (ctx.measureText(line + ch).width > maxWidth && line) {
+        out.push(line);
+        line = ch;
+      } else {
+        line += ch;
+      }
+    }
+    out.push(line);
+  }
+  return out;
+}
 
-  <!-- ============ 投稿ログ ============ -->
-  <section class="view" id="view-log">
-    <div id="log-content"></div>
-  </section>
+/** 下から上へ暗くするグラデーション。写真の上の文字を読ませるため。 */
+function scrimBottom(ctx, W, H, fromRatio, strength = 0.86) {
+  const top = fromRatio * H;
+  const g = ctx.createLinearGradient(0, top, 0, H);
+  g.addColorStop(0, 'rgba(8,8,8,0)');
+  g.addColorStop(0.45, `rgba(8,8,8,${strength * 0.62})`);
+  g.addColorStop(1, `rgba(8,8,8,${strength})`);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, top, W, H - top);
+}
 
-  <!-- ============ 設定 ============ -->
-  <section class="view" id="view-settings">
-    <div class="card">
-      <h2>画像の見た目</h2>
-      <label class="field">
-        <span>アクセントカラー（数値・見出しの色）</span>
-        <input type="color" id="accent-input">
-      </label>
-      <label class="field">
-        <span>Instagram の書き出しサイズ</span>
-        <select id="ig-aspect">
-          <option value="4:5">縦 4:5（1080×1350）推奨</option>
-          <option value="1:1">正方形 1:1（1080×1080）</option>
-        </select>
-      </label>
-      <label class="field">
-        <span>X の書き出しサイズ</span>
-        <select id="x-aspect">
-          <option value="16:9">横 16:9（1200×675）推奨</option>
-          <option value="1:1">正方形 1:1（1080×1080）</option>
-          <option value="4:5">縦 4:5（1080×1350）</option>
-        </select>
-      </label>
-    </div>
+function scrimTop(ctx, W, H, toRatio, strength = 0.7) {
+  const bottom = toRatio * H;
+  const g = ctx.createLinearGradient(0, 0, 0, bottom);
+  g.addColorStop(0, `rgba(8,8,8,${strength})`);
+  g.addColorStop(1, 'rgba(8,8,8,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, bottom);
+}
 
-    <div class="card">
-      <h2>Instagram と X の関係</h2>
-      <label class="check">
-        <input type="checkbox" id="opt-sync">
-        <span>同じ投稿の媒体別バージョンとして作る</span>
-      </label>
-      <p class="hint">
-        オンのとき、訴求軸・SKU・書き出し・画像の文字・写真が2媒体で一致し、Xだけ本文を短く・タグを少なくします。
-        内容の重複をこちらでコントロールしたいときはオン。まったく別の話題を2本出したいときはオフにしてください。
-      </p>
-    </div>
+export function setTracking(ctx, px) {
+  if ('letterSpacing' in ctx) ctx.letterSpacing = `${px}px`;
+}
 
-    <div class="card">
-      <h2>チェックの厳しさ</h2>
-      <label class="check">
-        <input type="checkbox" id="opt-pr">
-        <span>タイアップ投稿として運用する（#PR の付け忘れを警告する）</span>
-      </label>
-      <p class="hint">自社アカウントからの自社商品投稿では通常オフのままで構いません。インフルエンサー投稿の再掲や、案件としての投稿を行う場合にオンにしてください。</p>
-    </div>
+/** PROTEIN / MONSTER の2段ロゴ。戻り値は占有した高さ。 */
+function drawLogo(ctx, x, y, W, accent, scale = 1) {
+  const size = W * 0.036 * scale;
+  const lh = size * 1.02;
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+  ctx.font = `900 ${size}px ${FONT}`;
+  setTracking(ctx, size * 0.02);
+  ctx.fillStyle = BRAND.white;
+  ctx.fillText('PROTEIN', x, y);
+  ctx.fillStyle = accent;
+  ctx.fillText('MONSTER', x, y + lh);
+  setTracking(ctx, 0);
+  return lh * 2;
+}
 
-    <div class="card">
-      <h2>毎朝の通知</h2>
-      <p class="hint" id="cron-hint"></p>
-    </div>
+/** オレンジの角丸ラベル。戻り値は占有した高さ。 */
+function drawEyebrow(ctx, text, x, y, W, accent) {
+  if (!text) return 0;
+  const size = W * 0.03;
+  ctx.font = `700 ${size}px ${FONT}`;
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+  const padX = size * 0.7;
+  const padY = size * 0.42;
+  const w = ctx.measureText(text).width + padX * 2;
+  const h = size + padY * 2;
+  ctx.fillStyle = accent;
+  roundRect(ctx, x, y, w, h, h / 2);
+  ctx.fill();
+  ctx.fillStyle = BRAND.white;
+  ctx.fillText(text, x + padX, y + padY);
+  return h;
+}
 
-    <div class="card danger">
-      <h2>データ</h2>
-      <p class="hint">タグ・編集内容・投稿ログは、このブラウザにのみ保存されています。</p>
-      <div class="row">
-        <button class="btn ghost" id="btn-export">設定とタグを書き出す</button>
-        <label class="btn ghost">設定とタグを読み込む<input type="file" id="import-json" accept="application/json" hidden></label>
-        <button class="btn danger" id="btn-clear">画像ライブラリを空にする</button>
-      </div>
-    </div>
-  </section>
-</main>
+/** スペックのチップを横並び。戻り値は占有した高さ。 */
+function drawChips(ctx, chips, x, y, W, maxW, accent) {
+  if (!chips || !chips.length) return 0;
+  const size = W * 0.031;
+  const padX = size * 0.85;
+  const padY = size * 0.5;
+  const h = size + padY * 2;
+  const gap = size * 0.5;
 
-<div class="modal-back" id="dup-modal" hidden>
-  <div class="modal" role="dialog" aria-labelledby="dup-title" aria-modal="true">
-    <h2 id="dup-title">同じ名前の画像が既にあります</h2>
-    <p class="modal-lead" id="dup-lead"></p>
-    <pre class="dup-list" id="dup-list"></pre>
-    <p class="hint">
-      上書きすると、ライブラリにある同名の画像は差し替わります（タグは残ります）。
-      別の写真として両方残したい場合は、いったんやめてファイル名を変えてから取り込み直してください。
-    </p>
-    <div class="modal-actions">
-      <button class="btn ghost" id="dup-cancel">やめる（ファイル名を直す）</button>
-      <button class="btn ghost" id="dup-copy">重複した名前をコピー</button>
-      <button class="btn ghost" id="dup-skip">重複を飛ばして取り込む</button>
-      <button class="btn" id="dup-overwrite">上書きして取り込む</button>
-    </div>
-  </div>
-</div>
+  let cx = x;
+  let cy = y;
+  let rows = 1;
+  for (const chip of chips) {
+    const label = chip.k;
+    const value = chip.v;
+    ctx.font = `500 ${size}px ${FONT}`;
+    const lw = ctx.measureText(label + ' ').width;
+    ctx.font = `700 ${size}px ${FONT}`;
+    const vw = ctx.measureText(value).width;
+    const w = lw + vw + padX * 2;
 
-<div class="toast" id="toast" hidden></div>
+    if (cx > x && cx + w > x + maxW) {
+      cx = x;
+      cy += h + gap;
+      rows++;
+    }
 
-<script type="module" src="./app.js"></script>
-</body>
-</html>
+    ctx.fillStyle = 'rgba(10,10,10,0.72)';
+    roundRect(ctx, cx, cy, w, h, h / 2);
+    ctx.fill();
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = Math.max(1.5, W * 0.0018);
+    roundRect(ctx, cx, cy, w, h, h / 2);
+    ctx.stroke();
+
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'left';
+    ctx.font = `500 ${size}px ${FONT}`;
+    ctx.fillStyle = 'rgba(255,255,255,0.82)';
+    ctx.fillText(label, cx + padX, cy + padY);
+    ctx.font = `700 ${size}px ${FONT}`;
+    ctx.fillStyle = accent;
+    ctx.fillText(value, cx + padX + lw, cy + padY);
+
+    cx += w + gap;
+  }
+  return rows * h + (rows - 1) * gap;
+}
+
+/* ------------------------- テンプレート ------------------------- */
+
+function renderStat(ctx, ov, geo, accent) {
+  const { W, H, pad } = geo;
+  const top = ov.position === 'top';
+
+  // 先に高さを積算する。上寄せのときは、その高さぶん下げた位置を「底」として扱う。
+  const chipsH = measureChips(ctx, ov.chips, W, W - pad * 2);
+  const suffixH = ov.suffix ? W * 0.048 * 1.5 : 0;
+  const numSize = W * 0.235;
+  const bandH = numSize * 1.16;
+  const leadSize = W * 0.058;
+  ctx.font = `700 ${leadSize}px ${FONT}`;
+  const leadLines = ov.lead ? wrap(ctx, ov.lead, W - pad * 2) : [];
+  const leadH = leadLines.length * leadSize * 1.32;
+  const eyebrowH = ov.eyebrow ? W * 0.03 * 1.84 + W * 0.02 : 0;
+  const blockH = (chipsH ? chipsH + W * 0.035 : 0) + suffixH + bandH + W * 0.022 + leadH + eyebrowH;
+
+  const logoH = W * 0.036 * 2.04;
+  if (top) {
+    scrimTop(ctx, W, H, (blockH + pad * 2) / H + 0.06, 0.9);
+    scrimBottom(ctx, W, H, 0.86, 0.5);
+    drawLogo(ctx, pad, H - pad - logoH, W, accent);
+  } else {
+    scrimBottom(ctx, W, H, 0.34);
+    scrimTop(ctx, W, H, 0.22, 0.55);
+    drawLogo(ctx, pad, pad, W, accent);
+  }
+
+  let bottom = top ? pad + blockH : H - pad;
+
+  if (chipsH) {
+    drawChips(ctx, ov.chips, pad, bottom - chipsH, W, W - pad * 2, accent);
+    bottom -= chipsH + W * 0.035;
+  }
+
+  if (ov.suffix) {
+    const s2 = W * 0.048;
+    ctx.font = `700 ${s2}px ${FONT}`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = BRAND.white;
+    ctx.fillText(ov.suffix, pad, bottom);
+    bottom -= s2 * 1.5;
+  }
+
+  // オレンジ帯＋極太数字
+  ctx.font = `900 ${numSize}px ${FONT}`;
+  setTracking(ctx, -numSize * 0.02);
+  const numW = ctx.measureText(ov.big || '').width;
+  const bandPad = numSize * 0.11;
+  const bandY = bottom - bandH;
+  ctx.fillStyle = accent;
+  roundRect(ctx, pad, bandY, numW + bandPad * 2, bandH, W * 0.014);
+  ctx.fill();
+  ctx.fillStyle = BRAND.white;
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'left';
+  ctx.fillText(ov.big || '', pad + bandPad, bandY + bandH * 0.52);
+  setTracking(ctx, 0);
+  bottom = bandY - W * 0.022;
+
+  if (leadLines.length) {
+    ctx.font = `700 ${leadSize}px ${FONT}`;
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+    let y = bottom - (leadLines.length - 1) * leadSize * 1.32;
+    ctx.fillStyle = BRAND.white;
+    for (const line of leadLines) {
+      ctx.fillText(line, pad, y);
+      y += leadSize * 1.32;
+    }
+    bottom -= leadH;
+  }
+
+  if (ov.eyebrow) {
+    drawEyebrow(ctx, ov.eyebrow, pad, bottom - W * 0.03 * 1.84 - W * 0.02, W, accent);
+  }
+}
+
+function renderHook(ctx, ov, geo, accent) {
+  const { W, H, pad } = geo;
+  const top = ov.position === 'top';
+
+  const chipsH = measureChips(ctx, ov.chips, W, W - pad * 2);
+  const subSize = W * 0.038;
+  ctx.font = `500 ${subSize}px ${FONT}`;
+  const subLines = ov.sub ? wrap(ctx, ov.sub, W - pad * 2) : [];
+  const subH = subLines.length ? subLines.length * subSize * 1.5 + W * 0.012 : 0;
+  const headSize = W * 0.092;
+  ctx.font = `900 ${headSize}px ${FONT}`;
+  const headLines = wrap(ctx, ov.big, W - pad * 2 - W * 0.04);
+  const headLh = headSize * 1.34;
+  const headH = headLines.length * headLh;
+  const eyebrowH = ov.eyebrow ? W * 0.03 * 1.84 + W * 0.028 : 0;
+  const blockH = (chipsH ? chipsH + W * 0.04 : 0) + subH + headH + eyebrowH;
+
+  const logoH = W * 0.036 * 2.04;
+  if (top) {
+    scrimTop(ctx, W, H, (blockH + pad * 2) / H + 0.06, 0.9);
+    scrimBottom(ctx, W, H, 0.86, 0.5);
+    drawLogo(ctx, pad, H - pad - logoH, W, accent);
+  } else {
+    scrimBottom(ctx, W, H, 0.3);
+    scrimTop(ctx, W, H, 0.22, 0.55);
+    drawLogo(ctx, pad, pad, W, accent);
+  }
+
+  let bottom = top ? pad + blockH : H - pad;
+
+  if (chipsH) {
+    drawChips(ctx, ov.chips, pad, bottom - chipsH, W, W - pad * 2, accent);
+    bottom -= chipsH + W * 0.04;
+  }
+
+  if (subLines.length) {
+    ctx.font = `500 ${subSize}px ${FONT}`;
+    ctx.textBaseline = 'alphabetic';
+    ctx.textAlign = 'left';
+    let y = bottom;
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    for (let i = subLines.length - 1; i >= 0; i--) {
+      ctx.fillText(subLines[i], pad, y);
+      y -= subSize * 1.5;
+    }
+    bottom -= subH;
+  }
+
+  ctx.font = `900 ${headSize}px ${FONT}`;
+  setTracking(ctx, -headSize * 0.015);
+  let y = bottom - (headLines.length - 1) * headLh;
+  const blockTop = y - headSize * 0.86;
+
+  ctx.fillStyle = accent;
+  ctx.fillRect(pad, blockTop + headSize * 0.18, W * 0.011, headH - headSize * 0.34);
+
+  ctx.fillStyle = BRAND.white;
+  ctx.textBaseline = 'alphabetic';
+  ctx.textAlign = 'left';
+  for (const line of headLines) {
+    ctx.fillText(line, pad + W * 0.042, y);
+    y += headLh;
+  }
+  setTracking(ctx, 0);
+
+  if (ov.eyebrow) {
+    drawEyebrow(ctx, ov.eyebrow, pad, blockTop - W * 0.03 * 1.84 - W * 0.028, W, accent);
+  }
+}
+
+function renderBand(ctx, ov, geo, accent) {
+  const { W, H, pad } = geo;
+  // 上下帯は position でロゴ帯とコピー帯を入れ替える
+  const flip = ov.position === 'top';
+
+  // ロゴ帯：ロゴと前置き
+  const topH = W * 0.14;
+  const logoBarY = flip ? H - topH : 0;
+  ctx.fillStyle = 'rgba(8,8,8,0.9)';
+  ctx.fillRect(0, logoBarY, W, topH);
+  drawLogo(ctx, pad, logoBarY + (topH - W * 0.036 * 2.04) / 2, W, accent);
+  if (ov.eyebrow) {
+    const s = W * 0.03;
+    ctx.font = `700 ${s}px ${FONT}`;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.fillText(ov.eyebrow, W - pad, logoBarY + topH / 2);
+    ctx.textAlign = 'left';
+  }
+
+  // 下帯：見出し・小見出し・チップ
+  const headSize = W * 0.062;
+  ctx.font = `900 ${headSize}px ${FONT}`;
+  const headLines = wrap(ctx, ov.big, W - pad * 2);
+  const headLh = headSize * 1.3;
+  ctx.font = `500 ${W * 0.034}px ${FONT}`;
+  const subLines = ov.sub ? wrap(ctx, ov.sub, W - pad * 2) : [];
+  const subLh = W * 0.034 * 1.55;
+  const chipsH = measureChips(ctx, ov.chips, W, W - pad * 2);
+
+  const inner = W * 0.042;
+  const bandH =
+    inner * 2 +
+    headLines.length * headLh +
+    (subLines.length ? subLines.length * subLh + W * 0.012 : 0) +
+    (chipsH ? chipsH + W * 0.03 : 0);
+  const bandY = flip ? 0 : H - bandH;
+  ctx.fillStyle = 'rgba(8,8,8,0.9)';
+  ctx.fillRect(0, bandY, W, bandH);
+
+  let y = bandY + inner;
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+  ctx.font = `900 ${headSize}px ${FONT}`;
+  setTracking(ctx, -headSize * 0.015);
+  ctx.fillStyle = BRAND.white;
+  for (const line of headLines) {
+    ctx.fillText(line, pad, y);
+    y += headLh;
+  }
+  setTracking(ctx, 0);
+
+  if (subLines.length) {
+    y += W * 0.012;
+    ctx.font = `500 ${W * 0.034}px ${FONT}`;
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    for (const line of subLines) {
+      ctx.fillText(line, pad, y);
+      y += subLh;
+    }
+  }
+
+  if (chipsH) {
+    y += W * 0.03;
+    drawChips(ctx, ov.chips, pad, y, W, W - pad * 2, accent);
+  }
+}
+
+/** チップの占有高さだけを測る（レイアウトを下から積むため） */
+function measureChips(ctx, chips, W, maxW) {
+  if (!chips || !chips.length) return 0;
+  const size = W * 0.031;
+  const padX = size * 0.85;
+  const h = size + size * 0.5 * 2;
+  const gap = size * 0.5;
+  let x = 0;
+  let rows = 1;
+  for (const chip of chips) {
+    ctx.font = `500 ${size}px ${FONT}`;
+    const lw = ctx.measureText(chip.k + ' ').width;
+    ctx.font = `700 ${size}px ${FONT}`;
+    const w = lw + ctx.measureText(chip.v).width + padX * 2;
+    if (x > 0 && x + w > maxW) {
+      x = 0;
+      rows++;
+    }
+    x += w + gap;
+  }
+  return rows * h + (rows - 1) * gap;
+}
+
+/* ------------------------- 本体 ------------------------- */
+
+/**
+ * @param {HTMLCanvasElement} canvas
+ * @param {ImageBitmap|HTMLImageElement} img
+ * @param {object} opts { aspect, overlay, accent, focus }
+ */
+export async function render(canvas, img, opts = {}) {
+  await ensureFonts();
+  const { aspect = '4:5', overlay = null, accent = BRAND.orange, focus = 0.5 } = opts;
+  const { w: W, h: H } = ASPECTS[aspect] || ASPECTS['4:5'];
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = BRAND.ink;
+  ctx.fillRect(0, 0, W, H);
+  if (img) drawCover(ctx, img, W, H, focus);
+
+  if (!overlay) return canvas;
+
+  const geo = { W, H, pad: Math.round(W * 0.062) };
+  ctx.save();
+  const template = overlay.template || 'hook';
+  if (template === 'stat') renderStat(ctx, overlay, geo, accent);
+  else if (template === 'band') renderBand(ctx, overlay, geo, accent);
+  else renderHook(ctx, overlay, geo, accent);
+  ctx.restore();
+
+  return canvas;
+}
+
+export function toBlob(canvas, type = 'image/jpeg', quality = 0.94) {
+  return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
+}
+
+export function download(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
