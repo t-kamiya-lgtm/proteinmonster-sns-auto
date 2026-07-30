@@ -259,3 +259,52 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
   border-radius: 8px; padding: 7px 9px; font-family: var(--font); font-size: 12px;
   max-width: 100%;
 }
+
+/* 画像に載せる文字の編集欄 / レシピ投稿 */
+.field-inline { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.field-inline select {
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+  border-radius: 8px; padding: 7px 10px; font-family: var(--font); font-size: 13px;
+  max-width: 420px;
+}
+.recipe-slides {
+  display: grid; gap: 14px; margin-bottom: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+.recipe-slide {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 12px; overflow: hidden;
+}
+.recipe-slide .slide-label {
+  padding: 8px 12px; font-size: 12px; font-weight: 700;
+  border-bottom: 1px solid var(--line); background: var(--panel-2);
+}
+.recipe-slide canvas { width: 100%; height: auto; display: block; cursor: zoom-in; }
+
+/* 重複確認のモーダル */
+.modal-back {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(6, 7, 9, .72);
+  display: grid; place-items: center; padding: 20px;
+}
+.modal-back[hidden] { display: none; }
+.modal {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 22px;
+  max-width: 620px; width: 100%; max-height: 86vh; overflow-y: auto;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .55);
+}
+.modal h2 { font-size: 16px; margin-bottom: 8px; }
+.modal-lead { font-size: 13px; color: var(--text); margin-bottom: 12px; }
+.dup-list {
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 10px; padding: 12px; margin-bottom: 12px;
+  max-height: 240px; overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; line-height: 1.9; color: var(--warn);
+  white-space: pre; overflow-x: auto;
+}
+.modal-actions {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  justify-content: flex-end; margin-top: 16px;
+}

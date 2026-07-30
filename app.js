@@ -5,13 +5,17 @@ import { PRODUCTS, COMMON, COMPARISONS, DATA_NOTES } from './data/products.js';
 import { TAG_VOCAB, DRIVE_FOLDER_URL, IMAGE_CATALOG } from './data/images.js';
 import * as lib from './library.js';
 import * as composer from './composer.js';
+import * as recipeArt from './recipe.js';
+import { RECIPES, OUTRO, SWIPE_BAR, getRecipe, resolveRecipe } from './data/recipes.js';
+import { HASHTAGS } from './data/copy.js';
 
 /* ============================ 状態 ============================ */
 
 const LS = {
   settings: 'pm-sns:settings',
   edits: 'pm-sns:edits',
-  log: 'pm-sns:log'
+  log: 'pm-sns:log',
+  recipe: 'pm-sns:recipe'
 };
 
 const defaultSettings = {
@@ -40,6 +44,10 @@ if (settings.accent === '#d7ff3e') {
 let edits = load(LS.edits, {});
 let postLog = load(LS.log, { entries: [] });
 if (!Array.isArray(postLog.entries)) postLog = { entries: [] };
+
+// レシピ画面の状態。選んだレシピ・写真・編集したキャプションを覚えておく。
+let recipeState = load(LS.recipe, { key: RECIPES[0] ? RECIPES[0].key : null, heroKey: '', captions: {} });
+if (!recipeState.captions) recipeState.captions = {};
 
 let dateKey = jstDateKey();
 let variants = { ig: 0, x: 0 };
@@ -108,6 +116,19 @@ function withEdits(post) {
 function patchEdit(postId, patch) {
   edits[postId] = { ...(edits[postId] || {}), ...patch };
   save(LS.edits, edits);
+}
+
+/** canvas の中身を別ウインドウで等倍表示する */
+async function openFullSize(canvas) {
+  const blob = await composer.toBlob(canvas, 'image/png');
+  const url = URL.createObjectURL(blob);
+  const w = window.open(url, '_blank');
+  if (!w) {
+    toast('ポップアップがブロックされました。許可してください');
+    URL.revokeObjectURL(url);
+    return;
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 /** 画像に載せる文字を1本の文字列にまとめる（法令チェックにかけるため） */
@@ -236,18 +257,7 @@ function buildPostCard(post, imageItem, siblingKeys = []) {
   if (imageItem) {
     canvas.classList.add('zoomable');
     canvas.title = 'クリックで別ウインドウに拡大表示';
-    canvas.addEventListener('click', async () => {
-      // 書き出すのと同じ画像を、別ウインドウで等倍表示する。
-      const blob = await composer.toBlob(canvas, 'image/png');
-      const url = URL.createObjectURL(blob);
-      const w = window.open(url, '_blank');
-      if (!w) {
-        toast('ポップアップがブロックされました。許可してください');
-        URL.revokeObjectURL(url);
-        return;
-      }
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
-    });
+    canvas.addEventListener('click', () => openFullSize(canvas));
     canvasBox.append(canvas);
   }
   else canvasBox.append(el('div', { class: 'canvas-empty' }, '画像が未取込です。ライブラリに画像を追加してください。'));
@@ -338,6 +348,10 @@ function buildPostCard(post, imageItem, siblingKeys = []) {
           onchange: (e) => patchOverlay({ template: e.target.value })
         }, ...Object.entries(composer.TEMPLATES).map(([k, label]) =>
           el('option', { value: k, selected: k === (overlay.template || 'hook') ? 'selected' : null }, label))),
+        el('select', {
+          onchange: (e) => patchOverlay({ position: e.target.value })
+        }, ...Object.entries(composer.POSITIONS).map(([k, label]) =>
+          el('option', { value: k, selected: k === (overlay.position || 'bottom') ? 'selected' : null }, label))),
         el('button', {
           class: 'btn ghost small',
           onclick: () => {
@@ -515,6 +529,163 @@ function buildPostCard(post, imageItem, siblingKeys = []) {
   return card;
 }
 
+
+/* ============================ レシピ投稿 ============================ */
+
+const IG_CAPTION_MAX = 2200;
+
+/** レシピの写真候補。タグでSKUが一致するものを前に出す。 */
+function recipePhotoOptions(recipe) {
+  const tags = lib.loadTags();
+  const score = (item) => {
+    const t = tags[item.key] || [];
+    let v = 0;
+    if (t.includes(recipe.sku)) v += 3;
+    if (t.includes('both')) v += 1;
+    if (t.includes('cooked')) v += 2;
+    return -v;
+  };
+  return [...stored].sort((a, b) => score(a) - score(b) || a.key.localeCompare(b.key));
+}
+
+async function renderRecipeView() {
+  const notice = $('#recipe-notice');
+  const slidesBox = $('#recipe-slides');
+  const sel = $('#recipe-select');
+  const heroSel = $('#recipe-hero');
+
+  if (!RECIPES.length) {
+    notice.hidden = false;
+    notice.textContent = 'レシピがまだ登録されていません。data/recipes.js に原稿を追加してください。';
+    slidesBox.replaceChildren();
+    return;
+  }
+
+  const base = getRecipe(recipeState.key) || RECIPES[0];
+  recipeState.key = base.key;
+  // ゆで時間を商品表示の「3〜5分」に差し替え、調理時間も換算した状態で扱う。
+  // 画像とキャプションが同じ数字を使うよう、ここで一度だけ解決する。
+  const product = PRODUCTS[base.sku];
+  const recipe = resolveRecipe(base, product);
+
+  // レシピの選択肢
+  sel.replaceChildren(...RECIPES.map((r) => el('option', {
+    value: r.key,
+    selected: r.key === recipe.key ? 'selected' : null
+  }, `${r.sku === 'monster' ? 'モンスター' : 'ソバ'} ${String(r.no).padStart(2, '0')}｜${r.label}${r.title.replace(/\n/g, '')}`)));
+
+  // 写真の選択肢
+  const options = recipePhotoOptions(recipe);
+  const chosenKey = recipeState.heroKey || recipe.photos.hero || (options[0] ? options[0].key : '');
+  heroSel.replaceChildren(
+    el('option', { value: '' }, options.length ? '（自動：先頭の候補）' : '（画像が未取込です）'),
+    ...options.map((o) => el('option', {
+      value: o.key, selected: o.key === chosenKey ? 'selected' : null
+    }, o.key))
+  );
+
+  notice.hidden = stored.length > 0;
+  if (!stored.length) {
+    notice.textContent = '画像ライブラリが空です。①のタイトル画像に写真を使うには、先に画像を取り込んでください。②③④は写真なしでも書き出せます。';
+  }
+
+  const heroItem = stored.find((x) => x.key === chosenKey) || null;
+  const heroImg = heroItem ? await composer.loadBitmap(heroItem.blob) : null;
+
+  // ④のサムネは、他のレシピのできあがり写真を使う
+  const thumbItems = options.filter((o) => o.key !== chosenKey).slice(0, 3);
+  const thumbs = [];
+  for (const t of thumbItems) thumbs.push(await composer.loadBitmap(t.blob));
+
+  // 4枚を描く
+  slidesBox.replaceChildren();
+  const canvases = {};
+  for (const [slide, label] of Object.entries(recipeArt.SLIDES)) {
+    const canvas = el('canvas');
+    canvas.title = 'クリックで別ウインドウに拡大表示';
+    canvas.addEventListener('click', () => openFullSize(canvas));
+    canvases[slide] = canvas;
+    slidesBox.append(el('div', { class: 'recipe-slide' },
+      el('div', { class: 'slide-label' }, label), canvas));
+    await recipeArt.renderSlide(canvas, slide, recipe, {
+      heroImg, thumbs, accent: settings.accent, outro: OUTRO, swipeBar: SWIPE_BAR
+    });
+  }
+
+  // キャプション
+  // ハッシュタグはレシピ寄りに。キーで決まるので毎回同じ並びになる。
+  const tags = [];
+  for (const t of [...HASHTAGS.core, ...HASHTAGS.bySku[recipe.sku],
+    ...HASHTAGS.byAxis.time, ...HASHTAGS.byAxis.diet]) {
+    if (!tags.includes(t)) tags.push(t);
+    if (tags.length >= 20) break;
+  }
+  const generated = recipeArt.buildRecipeCaption(recipe, product, tags);
+  const ta = $('#recipe-caption');
+  ta.value = recipeState.captions[recipe.key] ?? generated;
+
+  const counter = $('#recipe-counter');
+  const compBox = $('#recipe-compliance');
+
+  function renderRecipeCompliance() {
+    const text = ta.value;
+    const n = [...text].length;
+    counter.textContent = `${n} 文字 / 目安 ${IG_CAPTION_MAX}`;
+    counter.classList.toggle('over', n > IG_CAPTION_MAX);
+
+    const r = checkCompliance(text, { includeOptional: settings.prMode });
+    compBox.replaceChildren();
+    const state = r.blocks.length ? 'block' : r.warns.length ? 'warn' : 'ok';
+    compBox.append(el('div', { class: `comp-head ${state}` },
+      r.blocks.length ? `要修正 ${r.blocks.length}件`
+        : r.warns.length ? `要確認 ${r.warns.length}件`
+          : '薬機法・景表法チェック：問題なし'));
+    for (const f of [...r.blocks, ...r.warns]) {
+      compBox.append(el('div', { class: 'comp-item' },
+        el('span', { class: 'law' }, `[${f.law}]`),
+        el('span', { class: 'matched' }, f.matched),
+        ' ' + f.reason,
+        el('span', { class: 'fix' }, '→ ' + f.fix)));
+    }
+    $('#recipe-download').disabled = r.blocks.length > 0;
+  }
+
+  ta.oninput = () => {
+    recipeState.captions[recipe.key] = ta.value;
+    save(LS.recipe, recipeState);
+    renderRecipeCompliance();
+  };
+  renderRecipeCompliance();
+
+  sel.onchange = (e) => {
+    recipeState.key = e.target.value;
+    recipeState.heroKey = '';
+    save(LS.recipe, recipeState);
+    renderRecipeView();
+  };
+  heroSel.onchange = (e) => {
+    recipeState.heroKey = e.target.value;
+    save(LS.recipe, recipeState);
+    renderRecipeView();
+  };
+  $('#recipe-copy').onclick = () => copyText(ta.value);
+  $('#recipe-reset').onclick = () => {
+    delete recipeState.captions[recipe.key];
+    save(LS.recipe, recipeState);
+    renderRecipeView();
+  };
+  $('#recipe-download').onclick = async () => {
+    const order = ['title', 'ingredients', 'steps', 'outro'];
+    for (let i = 0; i < order.length; i++) {
+      const blob = await composer.toBlob(canvases[order[i]], 'image/jpeg', 0.94);
+      composer.download(blob, `${recipe.key}_${i + 1}_${order[i]}.jpg`);
+      // 連続ダウンロードはブラウザに嫌われることがあるので、少し間を置く
+      await new Promise((res) => setTimeout(res, 350));
+    }
+    toast('4枚を書き出しました。1→4の順に並べて投稿してください');
+  };
+}
+
 /* ============================ 画像ライブラリ ============================ */
 
 let libFilter = 'all';
@@ -587,16 +758,67 @@ async function renderLibrary() {
   }
 }
 
+/**
+ * 重複を知らせて、どうするか選んでもらう。
+ * 戻り値は 'overwrite' | 'skip' | 'cancel'。
+ */
+function askAboutDuplicates(duplicates, freshCount) {
+  const back = $('#dup-modal');
+  const names = duplicates.map((d) => d.key);
+  $('#dup-lead').textContent =
+    `選んだファイルのうち ${duplicates.length}点が、すでにライブラリにある画像と同じ名前です`
+    + (freshCount ? `（残り ${freshCount}点は新規）。` : '。');
+  $('#dup-list').textContent = names.join('\n');
+  back.hidden = false;
+
+  return new Promise((resolve) => {
+    const done = (choice) => {
+      back.hidden = true;
+      document.removeEventListener('keydown', onKey);
+      resolve(choice);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') done('cancel'); };
+    document.addEventListener('keydown', onKey);
+    $('#dup-overwrite').onclick = () => done('overwrite');
+    $('#dup-skip').onclick = () => done('skip');
+    $('#dup-cancel').onclick = () => done('cancel');
+    $('#dup-copy').onclick = () => copyText(names.join('\n'));
+    back.onclick = (e) => { if (e.target === back) done('cancel'); };
+    $('#dup-overwrite').focus();
+  });
+}
+
 function setupDropzone() {
   const dz = $('#dropzone');
   const onFiles = async (files) => {
     if (!files || !files.length) return;
+
+    // 黙って上書きすると元の画像が消えるので、先に名前の衝突を調べる
+    const { duplicates, fresh, skipped } = await lib.inspectFiles(files);
+    let overwrite = true;
+    let list = files;
+
+    if (duplicates.length) {
+      const choice = await askAboutDuplicates(duplicates, fresh.length);
+      if (choice === 'cancel') {
+        toast('取り込みをやめました');
+        return;
+      }
+      overwrite = choice === 'overwrite';
+    }
+
     toast('取り込み中…');
-    const r = await lib.importFiles(files);
+    const r = await lib.importFiles(list, { overwrite });
     stored = await lib.listStored();
-    await renderLibrary();
-    await renderProposals();
-    toast(`${r.added}点を取り込みました（カタログ一致 ${r.matched}点）`);
+    // 取り込んだ画像はレシピ画面の候補にもなるので、画面全体を作り直す。
+    await refresh();
+
+    const parts = [`${r.added}点を取り込みました`];
+    if (r.matched) parts.push(`カタログ一致 ${r.matched}点`);
+    if (r.overwritten) parts.push(`上書き ${r.overwritten}点`);
+    if (r.skippedDup.length) parts.push(`同名を飛ばした ${r.skippedDup.length}点`);
+    if (skipped) parts.push(`画像以外を除外 ${skipped}点`);
+    toast(parts.join(' / '));
   };
 
   ['dragenter', 'dragover'].forEach((ev) =>
@@ -604,7 +826,14 @@ function setupDropzone() {
   ['dragleave', 'drop'].forEach((ev) =>
     dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove('over'); }));
   dz.addEventListener('drop', (e) => onFiles(e.dataTransfer.files));
-  $('#file-input').addEventListener('change', (e) => onFiles(e.target.files));
+  $('#file-input').addEventListener('change', async (e) => {
+    const input = e.target;
+    const files = input.files;
+    // 選択を空に戻しておく。そうしないと、同じファイルを選び直したときに
+    // change が発火せず、やり直しができない。
+    await onFiles(files);
+    input.value = '';
+  });
 }
 
 /* ============================ スペック ============================ */
@@ -731,6 +960,7 @@ function renderSettings() {
 async function refresh() {
   await renderProposals();
   await renderLibrary();
+  await renderRecipeView();
   renderSpec();
   renderLog();
   renderSettings();
